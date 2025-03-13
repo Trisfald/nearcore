@@ -317,6 +317,9 @@ impl AllEpochConfig {
             // need to support it here. Consider removing `epoch_length` from
             // EpochConfig.
             config.epoch_length = self.epoch_length;
+
+            config.target_validator_mandates_per_shard = 3;
+
             config
         } else {
             self.generate_epoch_config(protocol_version)
