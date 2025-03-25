@@ -75,17 +75,17 @@ impl tcp::Tier {
             | RoutedMessageBody::VersionedPartialEncodedChunk(..)
             | RoutedMessageBody::ChunkContractAccesses(_)
             | RoutedMessageBody::ContractCodeRequest(_)
+            | RoutedMessageBody::PartialEncodedChunkRequest(..)
+            | RoutedMessageBody::PartialEncodedChunkResponse(..)
+            | RoutedMessageBody::PartialEncodedChunkForward(..)
+            | RoutedMessageBody::ChunkStateWitnessAck(..)
             | RoutedMessageBody::ContractCodeResponse(_) => true,
             // Rest
             RoutedMessageBody::ForwardTx(..)
             | RoutedMessageBody::TxStatusRequest(..)
             | RoutedMessageBody::TxStatusResponse(..)
-            | RoutedMessageBody::PartialEncodedChunkRequest(..)
-            | RoutedMessageBody::PartialEncodedChunkResponse(..)
             | RoutedMessageBody::Ping(..)
             | RoutedMessageBody::Pong(..)
-            | RoutedMessageBody::PartialEncodedChunkForward(..)
-            | RoutedMessageBody::ChunkStateWitnessAck(..)
             | RoutedMessageBody::StatePartRequest(..)
             | RoutedMessageBody::PartialEncodedContractDeploys(..) => self == tcp::Tier::T2,
             // Deprecated

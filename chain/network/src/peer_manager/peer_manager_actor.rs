@@ -966,7 +966,7 @@ impl PeerManagerActor {
                         {
                             if self.state.send_message_to_peer(
                                 &self.clock,
-                                tcp::Tier::T2,
+                                tcp::Tier::T1,
                                 self.state.sign_message(
                                     &self.clock,
                                     RawRoutedMessage {
@@ -996,7 +996,7 @@ impl PeerManagerActor {
             NetworkRequests::PartialEncodedChunkResponse { route_back, response } => {
                 if self.state.send_message_to_peer(
                     &self.clock,
-                    tcp::Tier::T2,
+                    tcp::Tier::T1,
                     self.state.sign_message(
                         &self.clock,
                         RawRoutedMessage {
