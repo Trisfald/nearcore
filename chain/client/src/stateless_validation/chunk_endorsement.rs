@@ -53,6 +53,15 @@ impl ChunkEndorsementTracker {
             return Ok(());
         }
 
+        tracing::warn!(
+            target: "extralog",
+            event="endorsement_received",
+            shard_id=?endorsement.chunk_production_key().shard_id,
+            height=endorsement.chunk_production_key().height_created,
+            validator=?endorsement.validator_account(),
+            "Received chunk endorsement"
+        );
+
         // Validate the chunk endorsement and store it in the cache.
         if validate_chunk_endorsement(self.epoch_manager.as_ref(), &endorsement, &self.store)? {
             self.chunk_endorsements
@@ -101,6 +110,18 @@ impl ChunkEndorsementTracker {
             .map(|(account_id, (_, signature))| (account_id, signature.clone()))
             .collect();
 
-        Ok(chunk_validator_assignments.compute_endorsement_state(validator_signatures))
+        let result = chunk_validator_assignments.compute_endorsement_state(validator_signatures);
+
+        if result.is_endorsed {
+            tracing::warn!(
+                target: "extralog",
+                event="all_endorsements_received",
+                block_height=chunk_header.height_created(),
+                ?shard_id,
+                "Sufficient endorsements received"
+            );
+        }
+
+        Ok(result)
     }
 }

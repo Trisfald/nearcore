@@ -1135,6 +1135,15 @@ impl ClientActorInner {
             let shard_ids = self.client.epoch_manager.shard_ids(&epoch_id).unwrap();
             let have_all_chunks = head.height == 0 || num_chunks == shard_ids.len();
 
+            tracing::warn!(
+                target: "extralog",
+                event="block_producer_waiting_for_chunks",
+                height,
+                chunks_received=num_chunks,
+                total_chunks=shard_ids.len(),
+                "Block producer waiting for chunks"
+            );
+
             if self.client.doomslug.ready_to_produce_block(
                 height,
                 have_all_chunks,
@@ -1349,6 +1358,14 @@ impl ClientActorInner {
         signer: &Option<Arc<ValidatorSigner>>,
     ) -> Result<(), Error> {
         let _span = tracing::debug_span!(target: "client", "produce_block", next_height).entered();
+
+        tracing::warn!(
+            target: "extralog",
+            event="block_production_start",
+            height=next_height,
+            "Starting block production"
+        );
+
         let Some(block) = self.client.produce_block_on_head(next_height, false)? else {
             return Ok(());
         };
@@ -1958,6 +1975,14 @@ impl Handler<ChunkStateWitnessMessage> for ClientActorInner {
     fn handle(&mut self, msg: ChunkStateWitnessMessage) {
         let ChunkStateWitnessMessage { witness, raw_witness_size } = msg;
         let signer = self.client.validator_signer.get();
+        tracing::warn!(
+            target: "extralog",
+            event="state_witness_received",
+            height=witness.chunk_header.height_created(),
+            shard_id=?witness.chunk_header.shard_id(),
+            "State witness received"
+        );
+
         if let Err(err) =
             self.client.process_chunk_state_witness(witness, raw_witness_size, None, signer)
         {

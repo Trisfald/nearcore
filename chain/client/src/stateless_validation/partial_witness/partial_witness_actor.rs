@@ -245,6 +245,14 @@ impl PartialWitnessActor {
             &signer,
         );
 
+        tracing::warn!(
+            target: "extralog",
+            event="state_witness_sent",
+            shard_id=?state_witness.chunk_header.shard_id(),
+            height=state_witness.chunk_header.height_created(),
+            "State witness sent"
+        );
+
         if !contract_deploys.is_empty() {
             self.send_chunk_contract_deploys_parts(key, contract_deploys)?;
         }
@@ -408,6 +416,15 @@ impl PartialWitnessActor {
                 runtime_adapter.store(),
             ) {
                 Ok(true) => {
+                    tracing::warn!(
+                        target: "extralog",
+                        event="partial_state_witness_validated",
+                        ?shard_id,
+                        height=partial_witness.chunk_production_key().height_created,
+                        validator=?validator_account_id,
+                        "Partial state witness validated and forwarded"
+                    );
+
                     network_adapter.send(PeerManagerMessageRequest::NetworkRequests(
                         NetworkRequests::PartialEncodedStateWitnessForward(
                             target_chunk_validators,

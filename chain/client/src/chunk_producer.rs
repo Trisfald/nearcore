@@ -122,6 +122,13 @@ impl ChunkProducer {
         signer: &Arc<ValidatorSigner>,
         chain_validate: &dyn Fn(&SignedTransaction) -> bool,
     ) -> Result<Option<ProduceChunkResult>, Error> {
+        tracing::warn!(
+                    target: "extralog",
+                    event="chunk_production_start",
+                    next_height,
+                    ?shard_id,
+                    "Starting chunk production"
+        );
         let chunk_proposer = self
             .epoch_manager
             .get_chunk_producer_info(&ChunkProductionKey {
@@ -318,6 +325,14 @@ impl ChunkProducer {
             num_filtered_transactions,
             num_outgoing_receipts = outgoing_receipts.len(),
             "produced_chunk");
+
+        tracing::warn!(
+            target: "extralog",
+            event="chunk_production_complete",
+            next_height,
+            ?shard_id,
+            "Chunk produced successfully"
+        );
 
         metrics::CHUNK_PRODUCED_TOTAL.inc();
 

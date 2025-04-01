@@ -929,6 +929,14 @@ impl Client {
             .mut_chain_store()
             .save_latest_known(LatestKnown { height, seen: block.header().raw_timestamp() })?;
 
+        tracing::warn!(
+            target: "extralog",
+            event="block_produced",
+            block_hash=?block.hash(),
+            height=height,
+            "Block produced successfully"
+        );
+
         metrics::BLOCK_PRODUCED_TOTAL.inc();
 
         Ok(Some(block))
