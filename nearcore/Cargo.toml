@@ -87,7 +87,7 @@ name = "store"
 harness = false
 
 [features]
-default = ["json_rpc", "rosetta_rpc"]
+default = ["json_rpc", "rosetta_rpc", "nearcore/tx_generator"]
 
 performance_stats = [
   "near-performance-metrics/performance_stats",
