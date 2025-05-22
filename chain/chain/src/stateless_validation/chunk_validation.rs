@@ -32,9 +32,11 @@ use near_primitives::utils::compression::CompressedData;
 use near_store::flat::BlockInfo;
 use near_store::trie::ops::resharding::RetainMode;
 use near_store::{PartialStorage, Trie};
+use node_runtime::SignedValidPeriodTransactions;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[allow(clippy::large_enum_variant)]
@@ -367,10 +369,13 @@ pub fn pre_validate_chunk_state_witness(
             shard_id: last_chunk_shard_id,
         }
     } else {
+        let transactions = SignedValidPeriodTransactions::new(
+            state_witness.transactions.clone(),
+            transaction_validity_check_results,
+        );
         MainTransition::NewChunk(NewChunkData {
             chunk_header: last_chunk_block.chunks().get(last_chunk_shard_index).unwrap().clone(),
-            transactions: state_witness.transactions.clone(),
-            transaction_validity_check_results,
+            transactions,
             receipts: receipts_to_apply,
             block: Chain::get_apply_chunk_block_context(
                 last_chunk_block,
@@ -528,7 +533,7 @@ pub fn validate_chunk_state_witness(
     let shard_uid = shard_id_to_uid(epoch_manager, shard_id, &epoch_id)?;
     let protocol_version = epoch_manager.get_epoch_protocol_version(&epoch_id)?;
     let cache_result = {
-        let mut shard_cache = main_state_transition_cache.lock().unwrap();
+        let mut shard_cache = main_state_transition_cache.lock();
         shard_cache
             .get_mut(&witness_chunk_shard_uid)
             .and_then(|cache| cache.get(&block_hash).cloned())
@@ -580,7 +585,7 @@ pub fn validate_chunk_state_witness(
     };
     // Save main state transition result to cache.
     {
-        let mut shard_cache = main_state_transition_cache.lock().unwrap();
+        let mut shard_cache = main_state_transition_cache.lock();
         let cache = shard_cache.entry(witness_chunk_shard_uid).or_insert_with(|| {
             LruCache::new(NonZeroUsize::new(NUM_WITNESS_RESULT_CACHE_ENTRIES).unwrap())
         });

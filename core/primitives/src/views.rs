@@ -323,6 +323,12 @@ pub enum QueryRequest {
         #[serde(rename = "args_base64")]
         args: FunctionArgs,
     },
+    ViewGlobalContractCode {
+        code_hash: CryptoHash,
+    },
+    ViewGlobalContractCodeByAccountId {
+        account_id: AccountId,
+    },
 }
 
 fn is_false(v: &bool) -> bool {
@@ -1591,6 +1597,8 @@ pub struct ExecutionOutcomeView {
     /// The amount of tokens burnt corresponding to the burnt gas amount.
     /// This value doesn't always equal to the `gas_burnt` multiplied by the gas price, because
     /// the prepaid gas price might be lower than the actual gas price and it creates a deficit.
+    /// `tokens_burnt` also contains the penalty subtracted from refunds, while
+    /// `gas_burnt` only contains the gas that we actually burn for the execution.
     #[serde(with = "dec_format")]
     pub tokens_burnt: Balance,
     /// The id of the account on which the execution happens. For transaction this is signer_id,

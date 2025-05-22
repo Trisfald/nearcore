@@ -33,11 +33,11 @@ const GENESIS_HEIGHT: BlockHeight = 10000;
 
 const EPOCH_LENGTH: BlockHeightDelta = 10;
 
-fn get_boundary_accounts(num_shards: usize) -> Vec<String> {
+fn get_boundary_accounts(num_shards: usize) -> Vec<AccountId> {
     if num_shards > 27 {
         todo!("don't know how to include more than 27 shards yet!");
     }
-    let mut boundary_accounts = Vec::<String>::new();
+    let mut boundary_accounts = Vec::<AccountId>::new();
     for c in b'a'..=b'z' {
         if boundary_accounts.len() + 1 >= num_shards {
             break;
@@ -46,22 +46,22 @@ fn get_boundary_accounts(num_shards: usize) -> Vec<String> {
         while boundary_account.len() < AccountId::MIN_LEN {
             boundary_account.push('0');
         }
-        boundary_accounts.push(boundary_account);
+        boundary_accounts.push(boundary_account.parse().unwrap());
     }
     boundary_accounts
 }
 
-fn generate_accounts(boundary_accounts: &[String]) -> Vec<Vec<(AccountId, Nonce)>> {
+fn generate_accounts(boundary_accounts: &[AccountId]) -> Vec<Vec<(AccountId, Nonce)>> {
     let accounts_per_shard = 5;
     let mut accounts = Vec::new();
     let mut account_base = "0";
-    for a in boundary_accounts {
+    for account in boundary_accounts {
         accounts.push(
             (0..accounts_per_shard)
                 .map(|i| (format!("{}{}", account_base, i).parse().unwrap(), 1))
                 .collect::<Vec<_>>(),
         );
-        account_base = a.as_str();
+        account_base = account.as_str();
     }
     accounts.push(
         (0..accounts_per_shard)
@@ -128,9 +128,7 @@ fn setup_initial_blockchain(
     let boundary_accounts = get_boundary_accounts(num_shards);
     let accounts =
         if generate_shard_accounts { Some(generate_accounts(&boundary_accounts)) } else { None };
-
-    let shard_layout =
-        ShardLayout::simple_v1(&boundary_accounts.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+    let shard_layout = ShardLayout::multi_shard_custom(boundary_accounts, 1);
     let validators_spec = ValidatorsSpec::raw(
         validators,
         num_block_producer_seats as NumSeats,
@@ -394,6 +392,62 @@ fn run_test_with_added_node(state: TestState) {
     // TODO: due to current limitations of TestLoop we have to wait for the
     // sync hash block before starting the new node.
     let sync_hash = await_sync_hash(&mut env);
+
+    // In TestLoop the network infrastructure doesn't exist. State sync happens by
+    // writing to and reading from a local directory.
+    //
+    // Here we query the clients directly to confirm that those nodes which are expected
+    // to generate state responses in peer-to-peer sync are capable of doing so.
+    env.test_loop.run_until(
+        |data| {
+            for test_data in &env.node_datas {
+                let client = data.get_mut(&test_data.view_client_sender.actor_handle());
+
+                let account_id = test_data.account_id.clone();
+                let epoch_id = client.chain.head().unwrap().epoch_id;
+                let shard_ids = client.chain.epoch_manager.shard_ids(&epoch_id).unwrap();
+
+                for shard_id in shard_ids {
+                    // Get the header and part regardless of whether the node was tracking the
+                    // shard. It shouldn't crash on unexpected requests.
+                    let header = client
+                        .chain
+                        .state_sync_adapter
+                        .get_state_response_header(shard_id, sync_hash);
+                    let part = client
+                        .chain
+                        .state_sync_adapter
+                        .get_state_response_part(shard_id, 0, sync_hash);
+
+                    let was_tracking = client
+                        .chain
+                        .epoch_manager
+                        .cared_about_shard_prev_epoch_from_prev_block(
+                            &sync_hash,
+                            &account_id,
+                            shard_id,
+                        )
+                        .unwrap();
+                    if !was_tracking {
+                        continue;
+                    }
+
+                    // The node is expected to serve the state if it was tracking the shard
+                    // in the previous epoch. We make the run_until wait until we get back
+                    // Ok responses for both the header and part.
+                    if header.is_err() {
+                        return false;
+                    }
+                    if part.is_err() {
+                        return false;
+                    }
+                }
+            }
+
+            true
+        },
+        Duration::seconds(1),
+    );
 
     // Add new node which will sync from scratch.
     let genesis = env.shared_state.genesis.clone();

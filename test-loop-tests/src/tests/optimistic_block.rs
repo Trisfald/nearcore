@@ -98,7 +98,7 @@ fn make_invalid_ob(env: &TestLoopEnv, adv_type: OptimisticBlockAdvType) -> Optim
         &prev_header,
         height,
         &*validator_signer,
-        client.clock.clone(),
+        client.clock.now_utc().unix_timestamp_nanos() as u64,
         None,
         adv_type,
     )
@@ -253,7 +253,9 @@ fn alter_optimistic_block_at_height(
         peer_actor.register_override_handler(Box::new({
             let validator_signer = signer.clone();
             move |request: NetworkRequests| {
-                if let NetworkRequests::OptimisticBlock { optimistic_block } = &request {
+                if let NetworkRequests::OptimisticBlock { chunk_producers, optimistic_block } =
+                    &request
+                {
                     if optimistic_block.height() == height {
                         let altered_ob = optimistic_block::OptimisticBlock::alter(
                             optimistic_block,
@@ -263,6 +265,7 @@ fn alter_optimistic_block_at_height(
                             ),
                         );
                         return Some(NetworkRequests::OptimisticBlock {
+                            chunk_producers: chunk_producers.clone(),
                             optimistic_block: altered_ob,
                         });
                     }

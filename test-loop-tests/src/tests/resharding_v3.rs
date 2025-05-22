@@ -566,11 +566,11 @@ fn test_resharding_v3_base(params: TestReshardingParameters) {
     #[cfg(feature = "test_features")]
     {
         if params.delay_flat_state_resharding > 0 {
-            client_handles.iter().for_each(|handle| {
-                let client = &mut env.test_loop.data.get_mut(handle).client;
-                client.chain.resharding_manager.flat_storage_resharder.adv_task_delay_by_blocks =
-                    params.delay_flat_state_resharding;
-            });
+            for node_data in &env.node_datas {
+                let handle = node_data.resharding_sender.actor_handle();
+                let resharding_actor = env.test_loop.data.get_mut(&handle);
+                resharding_actor.adv_task_delay_by_blocks = params.delay_flat_state_resharding;
+            }
         }
     }
 
@@ -666,11 +666,15 @@ fn test_resharding_v3_base(params: TestReshardingParameters) {
         }
 
         for client in clients {
-            check_state_shard_uid_mapping_after_resharding(
+            let num_mapped_children = check_state_shard_uid_mapping_after_resharding(
                 client,
                 &resharding_block_hash.get().unwrap(),
                 parent_shard_uid,
             );
+
+            if num_mapped_children > 0 {
+                return false; // Wait for all mappings to be removed.
+            }
         }
 
         // Return false if garbage collection window has not passed yet since resharding.

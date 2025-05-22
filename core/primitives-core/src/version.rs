@@ -396,7 +396,9 @@ impl ProtocolFeature {
             ProtocolFeature::GlobalContracts
             | ProtocolFeature::BlockHeightForReceiptId
             | ProtocolFeature::ProduceOptimisticBlock => 77,
-            ProtocolFeature::SimpleNightshadeV6 | ProtocolFeature::SaturatingFloatToInt => 78,
+            ProtocolFeature::SimpleNightshadeV6
+            | ProtocolFeature::SaturatingFloatToInt
+            | ProtocolFeature::ReducedGasRefunds => 78,
 
             // Nightly features:
             ProtocolFeature::FixContractLoadingCost => 129,
@@ -404,7 +406,6 @@ impl ProtocolFeature {
             // that always enables this for mocknet (see config_mocknet function).
             ProtocolFeature::ShuffleShardAssignments => 143,
             ProtocolFeature::ExcludeExistingCodeFromWitnessForCodeLen => 148,
-            ProtocolFeature::ReducedGasRefunds => 149,
             // Place features that are not yet in Nightly below this line.
         }
     }
@@ -429,8 +430,3 @@ const NIGHTLY_PROTOCOL_VERSION: ProtocolVersion = 149;
 /// Largest protocol version supported by the current binary.
 pub const PROTOCOL_VERSION: ProtocolVersion =
     if cfg!(feature = "nightly") { NIGHTLY_PROTOCOL_VERSION } else { STABLE_PROTOCOL_VERSION };
-
-/// Both, outgoing and incoming tcp connections to peers, will be rejected if `peer's`
-/// protocol version is lower than this.
-/// TODO(pugachag): revert back to `- 3` after mainnet is upgraded
-pub const PEER_MIN_ALLOWED_PROTOCOL_VERSION: ProtocolVersion = STABLE_PROTOCOL_VERSION - 4;

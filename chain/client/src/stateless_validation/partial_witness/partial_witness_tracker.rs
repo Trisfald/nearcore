@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use lru::LruCache;
 use near_async::messaging::CanSend;
@@ -21,6 +21,7 @@ use near_primitives::stateless_validation::state_witness::{
     ChunkStateWitness, ChunkStateWitnessSize, EncodedChunkStateWitness,
 };
 use near_primitives::types::ShardId;
+use parking_lot::Mutex;
 use time::ext::InstantExt as _;
 
 use crate::client_actor::ClientSenderForPartialWitness;
@@ -33,8 +34,8 @@ use super::encoding::WITNESS_RATIO_DATA_PARTS;
 /// Max number of chunks to keep in the witness tracker cache. We reach here only after validation
 /// of the partial_witness so the LRU cache size need not be too large.
 /// This effectively limits memory usage to the size of the cache multiplied by
-/// MAX_COMPRESSED_STATE_WITNESS_SIZE, currently 40 * 48MiB = 1920MiB.
-const WITNESS_PARTS_CACHE_SIZE: usize = 40;
+/// MAX_COMPRESSED_STATE_WITNESS_SIZE times the number of shards.
+const WITNESS_PARTS_CACHE_SIZE: usize = 5;
 
 /// Number of entries to keep in LRU cache of the processed state witnesses
 /// We only store small amount of data (ChunkProductionKey) per entry there,
@@ -309,7 +310,8 @@ pub struct PartialEncodedStateWitnessTracker {
     /// Epoch manager to get the set of chunk validators
     epoch_manager: Arc<dyn EpochManagerAdapter>,
     /// Keeps track of state witness parts received from chunk producers.
-    parts_cache: Mutex<LruCache<ChunkProductionKey, CacheEntry>>,
+    /// Each shard is tracked independently.
+    parts_cache: Mutex<HashMap<ShardId, Arc<Mutex<LruCache<ChunkProductionKey, CacheEntry>>>>>,
     /// Keeps track of the already decoded witnesses. This is needed
     /// to protect chunk validator from processing the same witness multiple
     /// times.
@@ -326,9 +328,7 @@ impl PartialEncodedStateWitnessTracker {
         Self {
             client_sender,
             epoch_manager,
-            parts_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(WITNESS_PARTS_CACHE_SIZE).unwrap(),
-            )),
+            parts_cache: Mutex::new(HashMap::new()),
             processed_witnesses: SyncLruCache::new(PROCESSED_WITNESSES_CACHE_SIZE),
             encoders: Mutex::new(ReedSolomonEncoderCache::new(WITNESS_RATIO_DATA_PARTS)),
         }
@@ -380,27 +380,35 @@ impl PartialEncodedStateWitnessTracker {
             return Ok(());
         }
 
-        let mut parts_cache = self.parts_cache.lock().unwrap();
+        let parts_cache_by_shard_mutex = {
+            let mut map = self.parts_cache.lock();
+            Arc::clone(map.entry(key.shard_id).or_insert_with(|| {
+                Arc::new(Mutex::new(LruCache::new(
+                    NonZeroUsize::new(WITNESS_PARTS_CACHE_SIZE).unwrap(),
+                )))
+            }))
+        };
+        let mut parts_cache_by_shard = parts_cache_by_shard_mutex.lock();
         if create_if_not_exists {
-            Self::maybe_insert_new_entry_in_parts_cache(&mut parts_cache, &key);
+            Self::maybe_insert_new_entry_in_parts_cache(&mut parts_cache_by_shard, &key);
         }
-        let Some(entry) = parts_cache.get_mut(&key) else {
+        let Some(entry) = parts_cache_by_shard.get_mut(&key) else {
             return Ok(());
         };
         let total_size: usize = if let Some((decode_result, accessed_contracts)) =
             entry.update(update)
         {
+            self.processed_witnesses.push(key.clone(), ());
+
             // Record the time taken from receiving first part to decoding partial witness.
             let time_to_last_part = Instant::now().signed_duration_since(entry.created_at);
             metrics::PARTIAL_WITNESS_TIME_TO_LAST_PART
                 .with_label_values(&[key.shard_id.to_string().as_str()])
                 .observe(time_to_last_part.as_seconds_f64());
 
-            parts_cache.pop(&key);
-            let total_size = parts_cache.iter().map(|(_, entry)| entry.total_size()).sum();
-            drop(parts_cache);
-
-            self.processed_witnesses.push(key.clone(), ());
+            parts_cache_by_shard.pop(&key);
+            let total_size = parts_cache_by_shard.iter().map(|(_, entry)| entry.total_size()).sum();
+            drop(parts_cache_by_shard);
 
             let encoded_witness = match decode_result {
                 Ok(encoded_chunk_state_witness) => encoded_chunk_state_witness,
@@ -438,9 +446,11 @@ impl PartialEncodedStateWitnessTracker {
 
             total_size
         } else {
-            parts_cache.iter().map(|(_, entry)| entry.total_size()).sum()
+            parts_cache_by_shard.iter().map(|(_, entry)| entry.total_size()).sum()
         };
-        metrics::PARTIAL_WITNESS_CACHE_SIZE.set(total_size as f64);
+        metrics::PARTIAL_WITNESS_CACHE_SIZE
+            .with_label_values(&[key.shard_id.to_string().as_str()])
+            .set(total_size as f64);
 
         Ok(())
     }
@@ -451,7 +461,7 @@ impl PartialEncodedStateWitnessTracker {
             .epoch_manager
             .get_chunk_validator_assignments(&key.epoch_id, key.shard_id, key.height_created)?
             .len();
-        let mut encoders = self.encoders.lock().unwrap();
+        let mut encoders = self.encoders.lock();
         Ok(encoders.entry(num_parts))
     }
 
