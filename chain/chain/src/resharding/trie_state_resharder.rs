@@ -162,6 +162,14 @@ impl TrieStateResharder {
         let tries = self.runtime.get_tries();
         let trie =
             tries.get_trie_for_shard(child_shard_uid, state_root).recording_reads_new_recorder();
+
+        // Assert that the child shard has memtries loaded during resharding
+        debug_assert!(
+            trie.has_memtries(),
+            "Child shard {:?} should have memtries loaded during trie state resharding",
+            child_shard_uid
+        );
+
         let locked = trie.lock_for_iter();
         let mut iter = locked.iter()?;
         if let Some(seek_key) = seek_key {
