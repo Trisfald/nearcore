@@ -1076,6 +1076,12 @@ impl<'a> ChainStoreUpdate<'a> {
             DBCol::LatestWitnessesByIndex => {
                 store_update.delete(col, key);
             }
+            DBCol::InvalidChunkStateWitnesses => {
+                store_update.delete(col, key);
+            }
+            DBCol::InvalidWitnessesByIndex => {
+                store_update.delete(col, key);
+            }
             DBCol::StateSyncNewChunks => {
                 store_update.delete(col, key);
             }
@@ -1156,17 +1162,23 @@ fn gc_parent_shard_after_resharding(
     let shard_layout = epoch_manager.get_shard_layout(&next_epoch_id)?;
     let mut trie_store_update = store.trie_store().store_update();
     for parent_shard_uid in shard_layout.get_split_parent_shard_uids() {
-        // Delete the state of the parent shard
-        tracing::debug!(target: "garbage_collection", ?parent_shard_uid, "resharding state cleanup");
-        trie_store_update.delete_shard_uid_prefixed_state(parent_shard_uid);
+        // Check if any child shard still map to this parent shard
+        let children_shards =
+            shard_layout.get_children_shards_uids(parent_shard_uid.shard_id()).unwrap();
+        let has_active_mapping = children_shards.into_iter().any(|child_shard_uid| {
+            let mapped_shard_uid = get_shard_uid_mapping(&store, child_shard_uid);
+            mapped_shard_uid == parent_shard_uid && mapped_shard_uid != child_shard_uid
+        });
+        if !has_active_mapping {
+            // Delete the state of the parent shard
+            tracing::debug!(target: "garbage_collection", ?parent_shard_uid, "resharding state cleanup");
+            trie_store_update.delete_shard_uid_prefixed_state(parent_shard_uid);
+        } else {
+            tracing::debug!(target: "garbage_collection", ?parent_shard_uid, "skipping parent shard cleanup - active mappings exist");
+        }
     }
+
     chain_store_update.merge(trie_store_update.into());
-
-    // Assert that the shard_uid mapping doesn't exist for any of the shards in the new shard layout
-    for shard_uid in shard_layout.shard_uids() {
-        assert_eq!(get_shard_uid_mapping(&store, shard_uid), shard_uid, "Incomplete Resharding");
-    }
-
     Ok(())
 }
 
