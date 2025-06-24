@@ -297,11 +297,7 @@ impl ChainStore {
         save_trie_changes: bool,
         transaction_validity_period: BlockHeightDelta,
     ) -> ChainStore {
-        ChainStore {
-            store: store.chain_store(),
-            save_trie_changes,
-            transaction_validity_period,
-        }
+        ChainStore { store: store.chain_store(), save_trie_changes, transaction_validity_period }
     }
 
     pub fn store_update(&mut self) -> ChainStoreUpdate<'_> {
