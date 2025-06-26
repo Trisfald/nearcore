@@ -91,6 +91,7 @@ impl ChunkValidator {
             shard_id = %state_witness.chunk_production_key().shard_id,
             validator = %signer.validator_id(),
             tag_block_production = true,
+            tag_witness_distribution = true,
         )
         .entered();
 
@@ -116,6 +117,7 @@ impl ChunkValidator {
                 shard_id = %state_witness.chunk_production_key().shard_id,
                 validator = %signer.validator_id(),
                 tag_block_production = true,
+                tag_witness_distribution = true,
             )
             .entered();
             // processing_done_tracker must survive until the processing is finished.
