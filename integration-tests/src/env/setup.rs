@@ -156,7 +156,6 @@ fn setup(
 
     let view_client_addr = ViewClientActorInner::spawn_actix_actor(
         clock.clone(),
-        signer.clone(),
         chain_genesis.clone(),
         epoch_manager.clone(),
         shard_tracker.clone(),
@@ -164,6 +163,7 @@ fn setup(
         network_adapter.clone(),
         config.clone(),
         adv.clone(),
+        signer.clone(),
     );
 
     let client_adapter_for_partial_witness_actor = LateBoundSender::new();
