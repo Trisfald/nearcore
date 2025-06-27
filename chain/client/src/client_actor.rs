@@ -21,7 +21,9 @@ use crate::sync::state::chain_requests::{
     ChainFinalizationRequest, ChainSenderForStateSync, StateHeaderValidationRequest,
 };
 use crate::sync_jobs_actor::{ClientSenderForSyncJobs, SyncJobsActor};
+use crate::chunk_validation_actor::{ChunkValidationActor, ChunkValidationActorInner};
 use crate::{AsyncComputationMultiSpawner, StatusResponse, metrics};
+use near_chain::rayon_spawner::RayonAsyncComputationSpawner;
 use actix::Actor;
 use near_async::actix::AddrWithAutoSpanContextExt;
 use near_async::actix_wrapper::ActixWrapper;
@@ -122,6 +124,7 @@ pub struct StartClientResult {
     pub client_arbiter_handle: actix::ArbiterHandle,
     pub tx_pool: Arc<Mutex<ShardedTransactionPool>>,
     pub chunk_endorsement_tracker: Arc<ChunkEndorsementTracker>,
+    pub chunk_validation_actor: actix::Addr<ChunkValidationActor>,
 }
 
 /// Starts client in a separate Arbiter (thread).
@@ -183,6 +186,22 @@ pub fn start_client(
     let sync_jobs_actor = SyncJobsActor::new(client_sender_for_sync_jobs.as_multi_sender());
     let sync_jobs_actor_addr = sync_jobs_actor.spawn_actix_actor();
 
+    // Create chunk validation actor
+    let genesis_block = client.chain.get_block_by_height(0).unwrap();
+    let chunk_validation_actor = ChunkValidationActorInner::new(
+        client.chain.chain_store().clone(),
+        genesis_block,
+        epoch_manager.clone(),
+        runtime.clone(),
+        network_adapter.clone().into_sender(),
+        client.validator_signer.clone(),
+        client.config.save_latest_witnesses,
+        Arc::new(RayonAsyncComputationSpawner),
+    );
+    let chunk_validation_actor_addr = ChunkValidationActor::start_in_arbiter(&client_arbiter_handle, move |_| {
+        ActixWrapper::new(chunk_validation_actor)
+    });
+
     let client_actor_inner = ClientActorInner::new(
         clock,
         client,
@@ -215,6 +234,7 @@ pub fn start_client(
         client_arbiter_handle,
         tx_pool,
         chunk_endorsement_tracker,
+        chunk_validation_actor: chunk_validation_actor_addr,
     }
 }
 
@@ -230,6 +250,11 @@ pub struct SyncJobsSenderForClient {
 
 #[derive(Clone, MultiSend, MultiSenderFrom)]
 pub struct ClientSenderForPartialWitness {
+    pub chunk_state_witness: Sender<ChunkStateWitnessMessage>,
+}
+
+#[derive(Clone, MultiSend, MultiSenderFrom)]
+pub struct ChunkValidationSenderForClient {
     pub chunk_state_witness: Sender<ChunkStateWitnessMessage>,
 }
 
@@ -1906,19 +1931,6 @@ impl Handler<GetClientConfig> for ClientActorInner {
         tracing::debug!(target: "client", ?msg);
 
         Ok(self.client.config.clone())
-    }
-}
-
-impl Handler<ChunkStateWitnessMessage> for ClientActorInner {
-    #[perf]
-    fn handle(&mut self, msg: ChunkStateWitnessMessage) {
-        let ChunkStateWitnessMessage { witness, raw_witness_size } = msg;
-        let signer = self.client.validator_signer.get();
-        if let Err(err) =
-            self.client.process_chunk_state_witness(witness, raw_witness_size, None, signer)
-        {
-            tracing::error!(target: "client", ?err, "Error processing chunk state witness");
-        }
     }
 }
 
