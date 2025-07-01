@@ -8,7 +8,9 @@
 use crate::chunk_executor_actor::ExecutorBlock;
 #[cfg(feature = "test_features")]
 pub use crate::chunk_producer::AdvProduceChunksMode;
-use crate::chunk_validation_actor::{ChunkValidationActor, ChunkValidationActorInner};
+use crate::chunk_validation_actor::{
+    ChunkValidationActor, ChunkValidationActorInner, ChunkValidationSender,
+};
 #[cfg(feature = "test_features")]
 use crate::client::AdvProduceBlocksMode;
 use crate::client::{CatchupState, Client, EPOCH_START_INFO_BLOCKS};
@@ -159,6 +161,9 @@ pub fn start_client(
     let client_sender_for_client = LateBoundSender::<ClientSenderForClient>::new();
     let protocol_upgrade_schedule = get_protocol_upgrade_schedule(client_config.chain_id.as_str());
     let multi_spawner = AsyncComputationMultiSpawner::default();
+
+    let chunk_validation_adapter = LateBoundSender::<ChunkValidationSender>::new();
+
     let client = Client::new(
         clock.clone(),
         client_config,
@@ -178,6 +183,7 @@ pub fn start_client(
         state_sync_future_spawner,
         chain_sender_for_state_sync.as_multi_sender(),
         client_sender_for_client.as_multi_sender(),
+        chunk_validation_adapter.as_multi_sender(),
         protocol_upgrade_schedule,
     )
     .unwrap();
@@ -196,7 +202,9 @@ pub fn start_client(
         network_adapter.clone().into_sender(),
         client.validator_signer.clone(),
         client.config.save_latest_witnesses,
+        client.config.save_invalid_witnesses,
         Arc::new(RayonAsyncComputationSpawner),
+        client.config.orphan_state_witness_max_size.as_u64(),
     );
     let chunk_validation_actor_addr = chunk_validation_actor.spawn_actix_actor();
 
@@ -226,6 +234,8 @@ pub fn start_client(
     client_sender_for_client.bind(client_addr.clone().with_auto_span_context().into_multi_sender());
     chain_sender_for_state_sync
         .bind(client_addr.clone().with_auto_span_context().into_multi_sender());
+    chunk_validation_adapter
+        .bind(chunk_validation_actor_addr.clone().with_auto_span_context().into_multi_sender());
 
     StartClientResult {
         client_actor: client_addr,
