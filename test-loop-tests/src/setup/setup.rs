@@ -16,7 +16,7 @@ use near_chunks::shards_manager_actor::ShardsManagerActor;
 use near_client::chunk_executor_actor::ChunkExecutorActor;
 use near_client::chunk_validation_actor::ChunkValidationActorInner;
 use near_client::client_actor::ClientActorInner;
-use near_client::client_actor::ClientSenderForPartialWitness;
+use near_client::chunk_validation_actor::ChunkValidationSenderForPartialWitness;
 use near_client::gc_actor::GCActor;
 use near_client::sync_jobs_actor::SyncJobsActor;
 use near_client::{
@@ -262,7 +262,7 @@ pub fn setup_client(
         network_adapter.as_multi_sender(),
     );
 
-    let chunk_validation_adapter = LateBoundSender::<ClientSenderForPartialWitness>::new();
+    let chunk_validation_adapter = LateBoundSender::<ChunkValidationSenderForPartialWitness>::new();
 
     let partial_witness_actor = PartialWitnessActor::new(
         test_loop.clock(),

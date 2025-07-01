@@ -3,6 +3,7 @@ use actix::Actor as ActixActor;
 use near_async::actix_wrapper::ActixWrapper;
 use near_async::futures::{AsyncComputationSpawner, AsyncComputationSpawnerExt};
 use near_async::messaging::{Actor, Handler, Sender};
+use near_async::{MultiSend, MultiSenderFrom};
 use near_chain::chain::ChunkStateWitnessMessage;
 use near_chain::stateless_validation::chunk_validation::{self, MainStateTransitionCache};
 use near_chain::types::RuntimeAdapter;
@@ -21,6 +22,11 @@ use near_primitives::validator_signer::ValidatorSigner;
 use std::sync::Arc;
 
 pub type ChunkValidationActor = ActixWrapper<ChunkValidationActorInner>;
+
+#[derive(Clone, MultiSend, MultiSenderFrom)]
+pub struct ChunkValidationSenderForPartialWitness {
+    pub chunk_state_witness: Sender<ChunkStateWitnessMessage>,
+}
 
 /// A standalone actor for validating chunk state witnesses.
 /// This actor extracts chunk validation logic from the ClientActor to allow

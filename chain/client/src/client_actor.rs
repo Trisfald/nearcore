@@ -198,10 +198,7 @@ pub fn start_client(
         client.config.save_latest_witnesses,
         Arc::new(RayonAsyncComputationSpawner),
     );
-    let chunk_validation_actor_addr =
-        ChunkValidationActor::start_in_arbiter(&client_arbiter_handle, move |_| {
-            ActixWrapper::new(chunk_validation_actor)
-        });
+    let chunk_validation_actor_addr = chunk_validation_actor.spawn_actix_actor();
 
     let client_actor_inner = ClientActorInner::new(
         clock,
@@ -247,11 +244,6 @@ pub struct ClientSenderForClient {
 #[derive(Clone, MultiSend, MultiSenderFrom)]
 pub struct SyncJobsSenderForClient {
     pub block_catch_up: Sender<BlockCatchUpRequest>,
-}
-
-#[derive(Clone, MultiSend, MultiSenderFrom)]
-pub struct ClientSenderForPartialWitness {
-    pub chunk_state_witness: Sender<ChunkStateWitnessMessage>,
 }
 
 #[derive(Clone, MultiSend, MultiSenderFrom)]

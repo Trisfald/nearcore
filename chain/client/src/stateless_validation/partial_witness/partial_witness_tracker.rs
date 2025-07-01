@@ -26,7 +26,7 @@ use near_vm_runner::logic::ProtocolVersion;
 use parking_lot::Mutex;
 use time::ext::InstantExt as _;
 
-use crate::client_actor::ClientSenderForPartialWitness;
+use crate::chunk_validation_actor::ChunkValidationSenderForPartialWitness;
 use crate::metrics;
 
 use near_primitives::utils::compression::CompressedData;
@@ -349,8 +349,8 @@ impl ShardWitnessTracker {
 /// by the chunk producer and distributed to validators. Note that we do not need all the parts of to
 /// recreate the full state witness.
 pub struct PartialEncodedStateWitnessTracker {
-    /// Sender to send the encoded state witness to the client actor.
-    client_sender: ClientSenderForPartialWitness,
+    /// Sender to send the encoded state witness to the chunk validation actor.
+    chunk_validation_sender: ChunkValidationSenderForPartialWitness,
     /// Epoch manager to get the set of chunk validators
     epoch_manager: Arc<dyn EpochManagerAdapter>,
     /// Per-shard tracking of witness parts and processed witnesses.
@@ -362,11 +362,11 @@ pub struct PartialEncodedStateWitnessTracker {
 
 impl PartialEncodedStateWitnessTracker {
     pub fn new(
-        client_sender: ClientSenderForPartialWitness,
+        chunk_validation_sender: ChunkValidationSenderForPartialWitness,
         epoch_manager: Arc<dyn EpochManagerAdapter>,
     ) -> Self {
         Self {
-            client_sender,
+            chunk_validation_sender,
             epoch_manager,
             shard_trackers: Mutex::new(HashMap::new()),
             encoders: Mutex::new(ReedSolomonEncoderCache::new(WITNESS_RATIO_DATA_PARTS)),
@@ -501,10 +501,10 @@ impl PartialEncodedStateWitnessTracker {
                 &mut witness.mut_main_state_transition().base_state;
             values.extend(accessed_contracts.into_iter().map(|code| code.0.into()));
 
-            tracing::debug!(target: "client", ?key, "Sending encoded witness to client.");
+            tracing::debug!(target: "client", ?key, "Sending encoded witness to chunk validation actor.");
             let _span = tracing::debug_span!(
                 target: "client",
-                "send_witness_to_client",
+                "send_witness_to_chunk_validation_actor",
                 chunk_hash = ?witness.chunk_header().chunk_hash(),
                 height = key.height_created,
                 shard_id = %key.shard_id,
@@ -513,7 +513,7 @@ impl PartialEncodedStateWitnessTracker {
                 tag_witness_distribution = true,
             )
             .entered();
-            self.client_sender.send(ChunkStateWitnessMessage { witness, raw_witness_size });
+            self.chunk_validation_sender.send(ChunkStateWitnessMessage { witness, raw_witness_size });
 
             total_size
         } else {
