@@ -179,6 +179,10 @@ fn setup(
     ));
     let partial_witness_adapter = partial_witness_addr.with_auto_span_context();
 
+    let partial_witness_sender_for_client = PartialWitnessSenderForClient {
+        distribute_chunk_state_witness: partial_witness_adapter.clone().into_sender(),
+    };
+
     let (resharding_sender_addr, _) = spawn_actix_actor(ReshardingActor::new(
         epoch_manager.clone(),
         runtime.clone(),
@@ -188,7 +192,13 @@ fn setup(
     let resharding_sender = resharding_sender_addr.with_auto_span_context();
 
     let shards_manager_adapter_for_client = LateBoundSender::new();
-    let StartClientResult { client_actor, tx_pool, chunk_endorsement_tracker, .. } = start_client(
+    let StartClientResult {
+        client_actor,
+        tx_pool,
+        chunk_endorsement_tracker,
+        chunk_validation_actor,
+        ..
+    } = start_client(
         clock,
         config.clone(),
         chain_genesis,
@@ -205,7 +215,7 @@ fn setup(
         None,
         adv,
         None,
-        partial_witness_adapter.clone().into_multi_sender(),
+        partial_witness_sender_for_client,
         enable_doomslug,
         Some(TEST_SEED),
         resharding_sender.into_multi_sender(),
@@ -243,7 +253,8 @@ fn setup(
     let shards_manager_adapter = shards_manager_addr.with_auto_span_context();
     shards_manager_adapter_for_client.bind(shards_manager_adapter.clone());
 
-    client_adapter_for_partial_witness_actor.bind(client_actor.clone().with_auto_span_context());
+    client_adapter_for_partial_witness_actor
+        .bind(chunk_validation_actor.clone().with_auto_span_context());
 
     (
         client_actor,

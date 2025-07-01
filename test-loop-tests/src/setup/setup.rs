@@ -14,7 +14,9 @@ use near_chain::types::RuntimeAdapter;
 use near_chain_configs::{MutableConfigValue, ReshardingHandle};
 use near_chunks::shards_manager_actor::ShardsManagerActor;
 use near_client::chunk_executor_actor::ChunkExecutorActor;
+use near_client::chunk_validation_actor::ChunkValidationActorInner;
 use near_client::client_actor::ClientActorInner;
+use near_client::client_actor::ClientSenderForPartialWitness;
 use near_client::gc_actor::GCActor;
 use near_client::sync_jobs_actor::SyncJobsActor;
 use near_client::{
@@ -213,6 +215,17 @@ pub fn setup_client(
         Duration::milliseconds(100),
     );
 
+    let genesis_block = client.chain.get_block_by_height(0).unwrap();
+    let chunk_validation_actor = ChunkValidationActorInner::new(
+        client.chain.chain_store().clone(),
+        genesis_block,
+        epoch_manager.clone(),
+        runtime_adapter.clone(),
+        network_adapter.as_sender(),
+        validator_signer.clone(),
+        client_config.save_latest_witnesses,
+        Arc::new(test_loop.async_computation_spawner(identifier, |_| Duration::milliseconds(80))),
+    );
     let chunk_executor_sender = if cfg!(feature = "protocol_feature_spice") {
         chunk_executor_adapter.as_sender()
     } else {
@@ -249,10 +262,12 @@ pub fn setup_client(
         network_adapter.as_multi_sender(),
     );
 
+    let chunk_validation_adapter = LateBoundSender::<ClientSenderForPartialWitness>::new();
+
     let partial_witness_actor = PartialWitnessActor::new(
         test_loop.clock(),
         network_adapter.as_multi_sender(),
-        client_adapter.as_multi_sender(),
+        chunk_validation_adapter.as_multi_sender(),
         validator_signer.clone(),
         epoch_manager.clone(),
         runtime_adapter.clone(),

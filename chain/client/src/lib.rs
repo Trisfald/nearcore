@@ -8,11 +8,11 @@ pub use near_client_primitives::types::{
     QueryError, Status, StatusResponse, SyncStatus, TxStatus, TxStatusError,
 };
 
+pub use crate::chunk_validation_actor::{ChunkValidationActor, ChunkValidationActorInner};
 pub use crate::client::{AsyncComputationMultiSpawner, Client};
 #[cfg(feature = "test_features")]
 pub use crate::client_actor::NetworkAdversarialMessage;
 pub use crate::client_actor::{ClientActor, StartClientResult, start_client};
-pub use crate::chunk_validation_actor::{ChunkValidationActor, ChunkValidationActorInner};
 pub use crate::config_updater::ConfigUpdater;
 pub use crate::rpc_handler::{
     RpcHandler, RpcHandlerActor, RpcHandlerConfig, spawn_rpc_handler_actor,
@@ -37,9 +37,9 @@ mod chunk_distribution_network;
 pub mod chunk_executor_actor;
 mod chunk_inclusion_tracker;
 mod chunk_producer;
+pub mod chunk_validation_actor;
 mod client;
 pub mod client_actor;
-pub mod chunk_validation_actor;
 mod config_updater;
 pub mod debug;
 pub mod gc_actor;

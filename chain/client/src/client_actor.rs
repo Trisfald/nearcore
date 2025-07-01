@@ -8,6 +8,7 @@
 use crate::chunk_executor_actor::ExecutorBlock;
 #[cfg(feature = "test_features")]
 pub use crate::chunk_producer::AdvProduceChunksMode;
+use crate::chunk_validation_actor::{ChunkValidationActor, ChunkValidationActorInner};
 #[cfg(feature = "test_features")]
 use crate::client::AdvProduceBlocksMode;
 use crate::client::{CatchupState, Client, EPOCH_START_INFO_BLOCKS};
@@ -21,9 +22,7 @@ use crate::sync::state::chain_requests::{
     ChainFinalizationRequest, ChainSenderForStateSync, StateHeaderValidationRequest,
 };
 use crate::sync_jobs_actor::{ClientSenderForSyncJobs, SyncJobsActor};
-use crate::chunk_validation_actor::{ChunkValidationActor, ChunkValidationActorInner};
 use crate::{AsyncComputationMultiSpawner, StatusResponse, metrics};
-use near_chain::rayon_spawner::RayonAsyncComputationSpawner;
 use actix::Actor;
 use near_async::actix::AddrWithAutoSpanContextExt;
 use near_async::actix_wrapper::ActixWrapper;
@@ -39,6 +38,7 @@ use near_chain::ChainStoreAccess;
 use near_chain::chain::{
     ApplyChunksDoneMessage, BlockCatchUpRequest, BlockCatchUpResponse, ChunkStateWitnessMessage,
 };
+use near_chain::rayon_spawner::RayonAsyncComputationSpawner;
 use near_chain::resharding::types::ReshardingSender;
 use near_chain::state_snapshot_actor::SnapshotCallbacks;
 use near_chain::test_utils::format_hash;
@@ -187,7 +187,7 @@ pub fn start_client(
     let sync_jobs_actor_addr = sync_jobs_actor.spawn_actix_actor();
 
     // Create chunk validation actor
-    let genesis_block = client.chain.get_block_by_height(0).unwrap();
+    let genesis_block = client.chain.genesis_block();
     let chunk_validation_actor = ChunkValidationActorInner::new(
         client.chain.chain_store().clone(),
         genesis_block,
@@ -198,9 +198,10 @@ pub fn start_client(
         client.config.save_latest_witnesses,
         Arc::new(RayonAsyncComputationSpawner),
     );
-    let chunk_validation_actor_addr = ChunkValidationActor::start_in_arbiter(&client_arbiter_handle, move |_| {
-        ActixWrapper::new(chunk_validation_actor)
-    });
+    let chunk_validation_actor_addr =
+        ChunkValidationActor::start_in_arbiter(&client_arbiter_handle, move |_| {
+            ActixWrapper::new(chunk_validation_actor)
+        });
 
     let client_actor_inner = ClientActorInner::new(
         clock,

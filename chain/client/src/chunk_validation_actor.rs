@@ -1,21 +1,23 @@
-use near_async::actix_wrapper::ActixWrapper;
-use near_async::messaging::{Actor, Handler, Sender};
+use crate::stateless_validation::chunk_validator::send_chunk_endorsement_to_block_producers;
 use actix::Actor as ActixActor;
+use near_async::actix_wrapper::ActixWrapper;
 use near_async::futures::{AsyncComputationSpawner, AsyncComputationSpawnerExt};
+use near_async::messaging::{Actor, Handler, Sender};
 use near_chain::chain::ChunkStateWitnessMessage;
 use near_chain::stateless_validation::chunk_validation::{self, MainStateTransitionCache};
+use near_chain::types::RuntimeAdapter;
 use near_chain::validate::validate_chunk_with_chunk_extra;
-use crate::stateless_validation::chunk_validator::send_chunk_endorsement_to_block_producers;
 use near_chain::{ChainStore, ChainStoreAccess, Error};
-use near_epoch_manager::shard_assignment::shard_id_to_uid;
+use near_chain_configs::MutableValidatorSigner;
 use near_epoch_manager::EpochManagerAdapter;
+use near_epoch_manager::shard_assignment::shard_id_to_uid;
 use near_network::types::{NetworkRequests, PeerManagerMessageRequest};
 use near_performance_metrics_macros::perf;
 use near_primitives::block::Block;
-use near_primitives::stateless_validation::state_witness::{ChunkStateWitness, ChunkStateWitnessAck};
+use near_primitives::stateless_validation::state_witness::{
+    ChunkStateWitness, ChunkStateWitnessAck,
+};
 use near_primitives::validator_signer::ValidatorSigner;
-use near_chain_configs::MutableValidatorSigner;
-use near_chain::types::RuntimeAdapter;
 use std::sync::Arc;
 
 pub type ChunkValidationActor = ActixWrapper<ChunkValidationActorInner>;
@@ -73,6 +75,14 @@ impl ChunkValidationActorInner {
             .get_chunk_producer_info(&witness.chunk_production_key())?
             .account_id()
             .clone();
+
+        // Skip sending ack to self.
+        if let Some(validator_signer) = self.validator_signer.get() {
+            if chunk_producer == *validator_signer.validator_id() {
+                return Ok(());
+            }
+        }
+
         self.network_adapter.send(PeerManagerMessageRequest::NetworkRequests(
             NetworkRequests::ChunkStateWitnessAck(
                 chunk_producer,
@@ -339,4 +349,4 @@ impl Handler<ChunkStateWitnessMessage> for ChunkValidationActorInner {
             }
         }
     }
-} 
+}
