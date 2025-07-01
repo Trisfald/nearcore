@@ -318,7 +318,7 @@ impl Client {
     ) -> Result<(), Error> {
         let _span = tracing::debug_span!(
             target: "client",
-            "process_chunk_state_witness",
+            "client_process_chunk_state_witness",
             chunk_hash = ?witness.chunk_header().chunk_hash(),
             height = %witness.chunk_header().height_created(),
             shard_id = %witness.chunk_header().shard_id(),

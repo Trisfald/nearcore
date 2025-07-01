@@ -15,8 +15,8 @@ use near_chain_configs::{MutableConfigValue, ReshardingHandle};
 use near_chunks::shards_manager_actor::ShardsManagerActor;
 use near_client::chunk_executor_actor::ChunkExecutorActor;
 use near_client::chunk_validation_actor::ChunkValidationActorInner;
-use near_client::client_actor::ClientActorInner;
 use near_client::chunk_validation_actor::ChunkValidationSenderForPartialWitness;
+use near_client::client_actor::ClientActorInner;
 use near_client::gc_actor::GCActor;
 use near_client::sync_jobs_actor::SyncJobsActor;
 use near_client::{

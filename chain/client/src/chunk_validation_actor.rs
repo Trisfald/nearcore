@@ -29,8 +29,6 @@ pub struct ChunkValidationSenderForPartialWitness {
 }
 
 /// A standalone actor for validating chunk state witnesses.
-/// This actor extracts chunk validation logic from the ClientActor to allow
-/// for more focused and potentially parallelized chunk validation.
 pub struct ChunkValidationActorInner {
     chain_store: ChainStore,
     genesis_block: Arc<Block>,
@@ -98,14 +96,10 @@ impl ChunkValidationActorInner {
         Ok(())
     }
 
-    /// Process chunk state witness - this is extracted from Client::process_chunk_state_witness
-    fn process_chunk_state_witness_standalone(
-        &mut self,
-        witness: ChunkStateWitness,
-    ) -> Result<(), Error> {
+    fn process_chunk_state_witness(&mut self, witness: ChunkStateWitness) -> Result<(), Error> {
         let _span = tracing::debug_span!(
             target: "chunk_validation",
-            "process_chunk_state_witness_standalone",
+            "process_chunk_state_witness",
             chunk_hash = ?witness.chunk_header().chunk_hash(),
             height = %witness.chunk_header().height_created(),
             shard_id = %witness.chunk_header().shard_id(),
@@ -136,12 +130,10 @@ impl ChunkValidationActorInner {
             return Err(Error::Other("No validator signer available".to_string()));
         };
 
-        // Start validating the chunk - this is extracted from ChunkValidator::start_validating_chunk
-        self.start_validating_chunk_standalone(witness, &signer, false)
+        self.start_validating_chunk(witness, &signer, false)
     }
 
-    /// This is extracted from ChunkValidator::start_validating_chunk and made standalone
-    fn start_validating_chunk_standalone(
+    fn start_validating_chunk(
         &self,
         state_witness: ChunkStateWitness,
         signer: &Arc<ValidatorSigner>,
@@ -149,7 +141,7 @@ impl ChunkValidationActorInner {
     ) -> Result<(), Error> {
         let _span = tracing::debug_span!(
             target: "chunk_validation",
-            "start_validating_chunk_standalone",
+            "start_validating_chunk",
             height = %state_witness.chunk_production_key().height_created,
             shard_id = %state_witness.chunk_production_key().shard_id,
             validator = %signer.validator_id(),
@@ -338,7 +330,7 @@ impl Handler<ChunkStateWitnessMessage> for ChunkValidationActorInner {
         }
 
         // Process the witness
-        match self.process_chunk_state_witness_standalone(witness) {
+        match self.process_chunk_state_witness(witness) {
             Ok(()) => {
                 tracing::debug!(target: "chunk_validation", "Chunk witness validation started successfully");
             }
