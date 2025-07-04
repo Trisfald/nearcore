@@ -96,7 +96,7 @@ class CommandContext:
         """
         Returns the nodes and traffic generator with the previous schedule context.
         """
-        return self.nodes + to_list(self.traffic_generator)
+        return list(self.nodes) + to_list(self.traffic_generator)
 
     def get_targeted_with_schedule_ctx(self) -> list[NodeHandle]:
         """
@@ -271,13 +271,18 @@ def init_cmd(ctx: CommandContext):
 
 
 def hard_reset_cmd(ctx: CommandContext):
-    print("""
-        WARNING!!!!
-        WARNING!!!!
-        This will undo all chain state, which will force a restart from the beginning,
-        including the genesis state computation which takes several hours.
-        Continue? [yes/no]""")
-    if sys.stdin.readline().strip() != 'yes':
+    do_reset = getattr(ctx.args, 'yes', None)
+    if do_reset is None:
+        print("""
+            WARNING!!!!
+            WARNING!!!!
+            This will undo all chain state, which will force a restart from the beginning,
+            including the genesis state computation.
+            Continue? [yes/no]""")
+        do_reset = False
+        if sys.stdin.readline().strip() != 'yes':
+            do_reset = True
+    if not do_reset:
         return
     init_neard_runners(ctx, remove_home_dir=True)
     _clear_state_parts_if_exists(_get_state_parts_location(ctx.args), ctx.nodes)
@@ -344,7 +349,8 @@ def new_genesis_timestamp(node):
     result = version.get('result')
     if result is not None:
         if result.get('node_setup_version') == '1':
-            genesis_time = str(datetime.datetime.now(tz=datetime.timezone.utc))
+            genesis_time = datetime.datetime.now(
+                tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     return genesis_time
 
 
@@ -683,6 +689,17 @@ def run_remote_upload_file(ctx: CommandContext):
          on_exception="")
 
 
+def run_remote_download_file(ctx: CommandContext):
+    targeted = ctx.get_targeted()
+    logger.info(
+        f'Downloading {ctx.args.src} to {ctx.args.dst} on {",".join([h.name() for h in targeted])}'
+    )
+    pmap(lambda node: print_result(
+        node, node.download_file(ctx.args.src, ctx.args.dst)),
+         targeted,
+         on_exception="")
+
+
 def run_env_cmd(ctx: CommandContext):
     if ctx.args.clear_all:
         func = lambda node: node.neard_clear_env()
@@ -864,6 +881,7 @@ def register_base_commands(subparsers):
         help='''Stops neard and clears all test state on all nodes.''')
     hard_reset_parser.add_argument('--neard-binary-url', type=str)
     hard_reset_parser.add_argument('--neard-upgrade-binary-url', type=str)
+    hard_reset_parser.add_argument('--yes', action='store_true')
     hard_reset_parser.set_defaults(func=hard_reset_cmd)
 
     new_test_parser = subparsers.add_parser('new-test',
