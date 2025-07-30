@@ -1,3 +1,4 @@
+use crate::stateless_validation::metrics::VALIDATE_CHUNK_WITH_ENCODED_MERKLE_ROOT_TIME;
 use crate::{Chain, byzantine_assert};
 use crate::{ChainStore, Error};
 use near_epoch_manager::EpochManagerAdapter;
@@ -5,9 +6,15 @@ use near_primitives::bandwidth_scheduler::BandwidthRequests;
 use near_primitives::congestion_info::CongestionInfo;
 use near_primitives::hash::CryptoHash;
 use near_primitives::merkle::merklize;
-use near_primitives::sharding::{ShardChunk, ShardChunkHeader};
-use near_primitives::types::BlockHeight;
+use near_primitives::receipt::Receipt;
+use near_primitives::sharding::{
+    EncodedShardChunkBody, ShardChunk, ShardChunkHeader, TransactionReceipt,
+};
+use near_primitives::transaction::SignedTransaction;
 use near_primitives::types::chunk_extra::ChunkExtra;
+use near_primitives::types::{BlockHeight, ShardId};
+use near_primitives::version::ProtocolFeature;
+use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// Gas limit cannot be adjusted for more than 0.1% at a time.
 const GAS_LIMIT_ADJUSTMENT_FACTOR: u64 = 1000;
@@ -68,7 +75,7 @@ pub fn validate_chunk_with_chunk_extra(
     prev_chunk_extra: &ChunkExtra,
     prev_chunk_height_included: BlockHeight,
     chunk_header: &ShardChunkHeader,
-) -> Result<(), Error> {
+) -> Result<Vec<Receipt>, Error> {
     let outgoing_receipts = chain_store.get_outgoing_receipts_for_shard(
         epoch_manager,
         *prev_block_hash,
@@ -85,7 +92,48 @@ pub fn validate_chunk_with_chunk_extra(
         prev_chunk_extra,
         chunk_header,
         &outgoing_receipts_root,
-    )
+    )?;
+
+    Ok(outgoing_receipts)
+}
+
+pub fn validate_chunk_with_chunk_extra_and_roots(
+    chain_store: &ChainStore,
+    epoch_manager: &dyn EpochManagerAdapter,
+    prev_block_hash: &CryptoHash,
+    prev_chunk_extra: &ChunkExtra,
+    prev_chunk_height_included: BlockHeight,
+    chunk_header: &ShardChunkHeader,
+    new_transactions: &[SignedTransaction],
+    rs: &ReedSolomon,
+) -> Result<(), Error> {
+    let outgoing_receipts = validate_chunk_with_chunk_extra(
+        chain_store,
+        epoch_manager,
+        prev_block_hash,
+        prev_chunk_extra,
+        prev_chunk_height_included,
+        chunk_header,
+    )?;
+
+    let epoch_id = epoch_manager.get_epoch_id_from_prev_block(prev_block_hash)?;
+    let protocol_version = epoch_manager.get_epoch_protocol_version(&epoch_id)?;
+    if ProtocolFeature::ChunkPartChecks.enabled(protocol_version) {
+        let (tx_root, _) = merklize(new_transactions);
+        if &tx_root != chunk_header.tx_root() {
+            return Err(Error::InvalidTxRoot);
+        }
+
+        validate_chunk_with_encoded_merkle_root(
+            chunk_header,
+            outgoing_receipts,
+            new_transactions.to_vec(),
+            rs,
+            chunk_header.shard_id(),
+        )
+    } else {
+        Ok(())
+    }
 }
 
 /// Validate that all next chunk information matches previous chunk extra.
@@ -138,6 +186,37 @@ pub fn validate_chunk_with_chunk_extra_and_receipts_root(
         prev_chunk_extra.bandwidth_requests(),
         chunk_header.bandwidth_requests(),
     )?;
+
+    Ok(())
+}
+
+pub fn validate_chunk_with_encoded_merkle_root(
+    chunk_header: &ShardChunkHeader,
+    outgoing_receipts: Vec<Receipt>,
+    new_transactions: Vec<SignedTransaction>,
+    rs: &ReedSolomon,
+    shard_id: ShardId,
+) -> Result<(), Error> {
+    let shard_id_label = shard_id.to_string();
+    let _timer = VALIDATE_CHUNK_WITH_ENCODED_MERKLE_ROOT_TIME
+        .with_label_values(&[shard_id_label.as_str()])
+        .start_timer();
+
+    let (transaction_receipts_parts, encoded_length) =
+        near_primitives::reed_solomon::reed_solomon_encode(
+            rs,
+            &TransactionReceipt(new_transactions, outgoing_receipts.to_vec()),
+        );
+    let content = EncodedShardChunkBody { parts: transaction_receipts_parts };
+    let (encoded_merkle_root, _merkle_paths) = content.get_merkle_hash_and_paths();
+
+    if encoded_merkle_root != *chunk_header.encoded_merkle_root() {
+        return Err(Error::InvalidChunkEncodedMerkleRoot);
+    }
+
+    if encoded_length != chunk_header.encoded_length() as usize {
+        return Err(Error::InvalidChunkEncodedLength);
+    }
 
     Ok(())
 }

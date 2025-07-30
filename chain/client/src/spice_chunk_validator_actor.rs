@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use lru::LruCache;
 use near_async::futures::{AsyncComputationSpawner, AsyncComputationSpawnerExt as _};
 use near_async::messaging::{Handler, IntoSender as _, Sender};
 use near_async::{MultiSend, MultiSenderFrom};
@@ -32,6 +30,7 @@ use near_store::adapter::StoreAdapter as _;
 use crate::chunk_executor_actor::{ExecutionResultEndorsed, ProcessedBlock};
 use crate::spice_core::CoreStatementsProcessor;
 use crate::stateless_validation::chunk_endorsement::ChunkEndorsementTracker;
+use reed_solomon_erasure::galois_8::ReedSolomon;
 
 pub struct SpiceChunkValidatorActor {
     chain_store: ChainStore,
@@ -49,10 +48,7 @@ pub struct SpiceChunkValidatorActor {
     main_state_transition_result_cache: MainStateTransitionCache,
     validation_spawner: Arc<dyn AsyncComputationSpawner>,
 
-    // TODO(spice): Dedup with ChunkExecutorActor logic by storing next block hashes in db to allow
-    // access from both places.
-    /// Next block hashes keyed by block hash.
-    next_block_hashes: LruCache<CryptoHash, Vec<CryptoHash>>,
+    rs: Arc<ReedSolomon>,
 }
 
 impl near_async::messaging::Actor for SpiceChunkValidatorActor {}
@@ -64,7 +60,6 @@ impl SpiceChunkValidatorActor {
         runtime_adapter: Arc<dyn RuntimeAdapter>,
         epoch_manager: Arc<dyn EpochManagerAdapter>,
         network_adapter: PeerManagerAdapter,
-        next_block_hashes_cache_capacity: NonZeroUsize,
         validator_signer: MutableValidatorSigner,
         core_processor: CoreStatementsProcessor,
         chunk_endorsement_tracker: Arc<ChunkEndorsementTracker>,
@@ -75,6 +70,9 @@ impl SpiceChunkValidatorActor {
         // See ChunkValidator::new in c/c/s/s/chunk_validator/mod.rs for rationale used currently.
         let validation_thread_limit =
             runtime_adapter.get_shard_layout(PROTOCOL_VERSION).num_shards() as usize;
+        let data_parts = epoch_manager.num_data_parts();
+        let parity_parts = epoch_manager.num_total_parts() - data_parts;
+        let rs = Arc::new(ReedSolomon::new(data_parts, parity_parts).unwrap());
         Self {
             pending_witnesses: HashMap::new(),
             client_config,
@@ -82,12 +80,12 @@ impl SpiceChunkValidatorActor {
             runtime_adapter,
             epoch_manager,
             network_adapter,
-            next_block_hashes: LruCache::new(next_block_hashes_cache_capacity),
             validator_signer,
             core_processor,
             chunk_endorsement_tracker,
             validation_spawner: validation_spawner.into_spawner(validation_thread_limit),
             main_state_transition_result_cache: MainStateTransitionCache::default(),
+            rs,
         }
     }
 }
@@ -101,9 +99,6 @@ impl Handler<ProcessedBlock> for SpiceChunkValidatorActor {
                 return;
             }
         };
-        let header = block.header();
-        let prev_block_hash = header.prev_hash();
-        self.next_block_hashes.get_or_insert_mut(*prev_block_hash, || Vec::new()).push(block_hash);
 
         if let Some(signer) = self.validator_signer.get() {
             if let Err(err) = self.process_ready_pending_state_witnesses(block, signer) {
@@ -116,14 +111,16 @@ impl Handler<ProcessedBlock> for SpiceChunkValidatorActor {
 impl Handler<ExecutionResultEndorsed> for SpiceChunkValidatorActor {
     fn handle(&mut self, ExecutionResultEndorsed { block_hash }: ExecutionResultEndorsed) {
         if let Some(signer) = self.validator_signer.get() {
-            let next_blocks = self.next_block_hashes.get(&block_hash).cloned();
-            for next_block_hash in next_blocks.into_iter().flatten() {
-                let block = self.chain_store.get_block(&next_block_hash).expect(
+            let next_block_hashes =
+                self.chain_store.get_all_next_block_hashes(&block_hash).unwrap();
+            for next_block_hash in next_block_hashes {
+                let next_block = self.chain_store.get_block(&next_block_hash).expect(
                     "block added to next blocks only after it's processed so it should be in store",
                 );
-                if let Err(err) = self.process_ready_pending_state_witnesses(block, signer.clone())
+                if let Err(err) =
+                    self.process_ready_pending_state_witnesses(next_block, signer.clone())
                 {
-                    tracing::error!(target: "spice_chunk_validator", %block_hash, ?err, "failed to process ready pending state witnesses");
+                    tracing::error!(target: "spice_chunk_validator", %next_block_hash, %block_hash, ?err, "failed to process ready pending state witnesses");
                 }
             }
         }
@@ -139,7 +136,7 @@ impl Handler<SpanWrapped<ChunkStateWitnessMessage>> for SpiceChunkValidatorActor
     #[perf]
     fn handle(&mut self, msg: SpanWrapped<ChunkStateWitnessMessage>) {
         let msg = msg.span_unwrap();
-        let ChunkStateWitnessMessage { witness, raw_witness_size } = msg;
+        let ChunkStateWitnessMessage { witness, raw_witness_size, .. } = msg;
         let Some(signer) = self.validator_signer.get() else {
             tracing::error!(target: "spice_chunk_validator", ?witness, "Received a chunk state witness but this is not a validator node.");
             return;
@@ -298,6 +295,7 @@ impl SpiceChunkValidatorActor {
         let store = self.chain_store.store();
         let network_sender = self.network_adapter.clone().into_sender();
         let chunk_endorsement_tracker = self.chunk_endorsement_tracker.clone();
+        let rs = self.rs.clone();
         self.validation_spawner.spawn("spice_stateless_validation", move || {
             let chunk_header = witness.chunk_header().clone();
             let shard_id = witness.chunk_header().shard_id();
@@ -309,6 +307,7 @@ impl SpiceChunkValidatorActor {
                 &main_state_transition_cache,
                 store,
                 save_witness_if_invalid,
+                rs,
             ) {
                 Ok(execution_result) => execution_result,
                 Err(err) => {

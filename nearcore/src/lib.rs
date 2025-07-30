@@ -11,7 +11,9 @@ use actix_rt::ArbiterHandle;
 use anyhow::Context;
 use cold_storage::ColdStoreLoopHandle;
 use near_async::actix::AddrWithAutoSpanContextExt;
-use near_async::actix_wrapper::{ActixWrapper, spawn_actix_actor};
+use near_async::actix_wrapper::{
+    ActixWrapper, SyncActixWrapper, spawn_actix_actor, spawn_sync_actix_actor,
+};
 use near_async::futures::TokioRuntimeFutureSpawner;
 use near_async::messaging::{IntoMultiSender, IntoSender, LateBoundSender};
 use near_async::time::{self, Clock};
@@ -22,15 +24,17 @@ use near_chain::state_snapshot_actor::{
     SnapshotCallbacks, StateSnapshotActor, get_delete_snapshot_callback, get_make_snapshot_callback,
 };
 use near_chain::types::RuntimeAdapter;
-use near_chain::{Chain, ChainGenesis};
+use near_chain::{
+    Chain, ChainGenesis, PartialWitnessValidationThreadPool, WitnessCreationThreadPool,
+};
 use near_chain_configs::ReshardingHandle;
 use near_chunks::shards_manager_actor::start_shards_manager;
 use near_client::adapter::client_sender_for_network;
 use near_client::gc_actor::GCActor;
 use near_client::{
-    ClientActor, ConfigUpdater, PartialWitnessActor, RpcHandlerActor, RpcHandlerConfig,
-    StartClientResult, ViewClientActor, ViewClientActorInner, spawn_rpc_handler_actor,
-    start_client,
+    ChunkValidationSenderForPartialWitness, ClientActor, ConfigUpdater, PartialWitnessActor,
+    RpcHandlerActor, RpcHandlerConfig, StartClientResult, StateRequestActor, ViewClientActor,
+    ViewClientActorInner, spawn_rpc_handler_actor, start_client,
 };
 use near_epoch_manager::EpochManager;
 use near_epoch_manager::EpochManagerAdapter;
@@ -93,7 +97,8 @@ pub fn open_storage(home_dir: &Path, near_config: &mut NearConfig) -> anyhow::Re
     let opener = NodeStorage::opener(
         home_dir,
         &near_config.config.store,
-        near_config.config.archival_config(),
+        near_config.config.cold_store.as_ref(),
+        near_config.config.cloud_storage.as_ref(),
     )
     .with_migrator(&migrator);
     let storage = match opener.open() {
@@ -215,6 +220,9 @@ fn get_split_store(config: &NearConfig, storage: &NodeStorage) -> anyhow::Result
 pub struct NearNode {
     pub client: Addr<ClientActor>,
     pub view_client: Addr<ViewClientActor>,
+    // TODO(darioush): Remove once we migrate `slow_test_state_sync_headers` and
+    // `slow_test_state_sync_headers_no_tracked_shards` to testloop.
+    pub state_request_client: Addr<SyncActixWrapper<StateRequestActor>>,
     pub rpc_handler: Addr<RpcHandlerActor>,
     #[cfg(feature = "tx_generator")]
     pub tx_generator: Addr<TxGeneratorActor>,
@@ -356,6 +364,22 @@ pub fn start_with_config_and_synchronization(
         config.validator_signer.clone(),
     );
 
+    // Use dedicated thread pool for StateRequestActor
+    let state_request_addr = {
+        let runtime = runtime.clone();
+        let epoch_manager = epoch_manager.clone();
+        spawn_sync_actix_actor(config.client_config.state_request_server_threads, move || {
+            StateRequestActor::new(
+                Clock::real(),
+                runtime.clone(),
+                epoch_manager.clone(),
+                genesis_id.hash,
+                config.client_config.state_request_throttle_period,
+                config.client_config.state_requests_per_throttle_period,
+            )
+        })
+    };
+
     let state_snapshot_sender = LateBoundSender::new();
     let state_snapshot_actor = StateSnapshotActor::new(
         runtime.get_flat_storage_manager(),
@@ -383,7 +407,8 @@ pub fn start_with_config_and_synchronization(
             epoch_manager.clone(),
             runtime.clone(),
             Arc::new(RayonAsyncComputationSpawner),
-            Arc::new(RayonAsyncComputationSpawner),
+            Arc::new(PartialWitnessValidationThreadPool::new()),
+            Arc::new(WitnessCreationThreadPool::new()),
         ));
 
     let (_gc_actor, gc_arbiter) = spawn_actix_actor(GCActor::new(
@@ -413,6 +438,7 @@ pub fn start_with_config_and_synchronization(
         client_arbiter_handle,
         tx_pool,
         chunk_endorsement_tracker,
+        chunk_validation_actor,
     } = start_client(
         Clock::real(),
         config.client_config.clone(),
@@ -436,7 +462,9 @@ pub fn start_with_config_and_synchronization(
         resharding_sender.into_multi_sender(),
     );
     client_adapter_for_shards_manager.bind(client_actor.clone().with_auto_span_context());
-    client_adapter_for_partial_witness_actor.bind(client_actor.clone().with_auto_span_context());
+    client_adapter_for_partial_witness_actor.bind(ChunkValidationSenderForPartialWitness {
+        chunk_state_witness: chunk_validation_actor.with_auto_span_context().into_sender(),
+    });
     let (shards_manager_actor, shards_manager_arbiter_handle) = start_shards_manager(
         epoch_manager.clone(),
         view_epoch_manager.clone(),
@@ -492,6 +520,7 @@ pub fn start_with_config_and_synchronization(
             view_client_addr.clone(),
             rpc_handler.clone(),
         ),
+        state_request_addr.clone().with_auto_span_context().into_multi_sender(),
         network_adapter.as_multi_sender(),
         shards_manager_adapter.as_sender(),
         partial_witness_actor.with_auto_span_context().into_multi_sender(),
@@ -561,6 +590,7 @@ pub fn start_with_config_and_synchronization(
     Ok(NearNode {
         client: client_actor,
         view_client: view_client_addr,
+        state_request_client: state_request_addr,
         rpc_handler,
         #[cfg(feature = "tx_generator")]
         tx_generator,

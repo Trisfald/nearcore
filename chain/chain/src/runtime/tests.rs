@@ -122,7 +122,8 @@ impl TestEnv {
             if config.zero_fees { RuntimeConfigStore::free() } else { RuntimeConfigStore::test() };
 
         let compiled_contract_cache =
-            FilesystemContractRuntimeCache::new(&dir.as_ref(), None::<&str>).unwrap();
+            FilesystemContractRuntimeCache::new(&dir.as_ref(), None::<&str>, "contract.cache")
+                .unwrap();
 
         initialize_genesis_state(store.clone(), &genesis, Some(dir.path()));
         let epoch_manager = EpochManager::new_arc_handle(store.clone(), &genesis.config, None);
@@ -740,11 +741,17 @@ fn test_state_sync() {
     root_node_wrong.data = std::sync::Arc::new([123]);
     assert!(!new_env.runtime.validate_state_root_node(&root_node_wrong, &env.state_roots[0]));
     assert!(!new_env.runtime.validate_state_part(
+        ShardId::new(0),
         &Trie::EMPTY_ROOT,
         PartId::new(0, 1),
         &state_part
     ));
-    new_env.runtime.validate_state_part(&env.state_roots[0], PartId::new(0, 1), &state_part);
+    new_env.runtime.validate_state_part(
+        ShardId::new(0),
+        &env.state_roots[0],
+        PartId::new(0, 1),
+        &state_part,
+    );
     let epoch_id = &new_env.head.epoch_id;
     new_env
         .runtime
@@ -1284,7 +1291,7 @@ fn test_genesis_hash() {
     let runtime = NightshadeRuntime::test_with_runtime_config_store(
         tempdir.path(),
         store.clone(),
-        FilesystemContractRuntimeCache::new(tempdir.path(), None::<&str>)
+        FilesystemContractRuntimeCache::new(tempdir.path(), None::<&str>, "contract.cache")
             .expect("filesystem contract cache")
             .handle(),
         &genesis.config,
@@ -1514,8 +1521,9 @@ fn test_precompile_contracts_updates_cache() {
     initialize_genesis_state(store.clone(), &genesis, Some(tempdir.path()));
     let epoch_manager = EpochManager::new_arc_handle(store.clone(), &genesis.config, None);
 
-    let contract_cache = FilesystemContractRuntimeCache::new(tempdir.path(), None::<&str>)
-        .expect("filesystem contract cache");
+    let contract_cache =
+        FilesystemContractRuntimeCache::new(tempdir.path(), None::<&str>, "contract.cache")
+            .expect("filesystem contract cache");
     let runtime = NightshadeRuntime::test_with_runtime_config_store(
         tempdir.path(),
         store,

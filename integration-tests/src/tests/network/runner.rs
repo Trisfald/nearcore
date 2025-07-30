@@ -7,13 +7,14 @@ use near_async::messaging::{IntoMultiSender, IntoSender, LateBoundSender, noop};
 use near_async::time::{self, Clock};
 use near_chain::rayon_spawner::RayonAsyncComputationSpawner;
 use near_chain::types::RuntimeAdapter;
-use near_chain::{Chain, ChainGenesis};
+use near_chain::{Chain, ChainGenesis, ChainStore};
 use near_chain_configs::{ClientConfig, Genesis, GenesisConfig, MutableConfigValue};
 use near_chunks::shards_manager_actor::start_shards_manager;
+use near_client::ChunkValidationActorInner;
 use near_client::adapter::client_sender_for_network;
 use near_client::{
-    PartialWitnessActor, RpcHandlerConfig, StartClientResult, ViewClientActorInner,
-    spawn_rpc_handler_actor, start_client,
+    PartialWitnessActor, RpcHandlerConfig, StartClientResult, StateRequestActor,
+    ViewClientActorInner, spawn_rpc_handler_actor, start_client,
 };
 use near_epoch_manager::EpochManager;
 use near_epoch_manager::shard_tracker::ShardTracker;
@@ -132,6 +133,14 @@ fn setup_network_node(
         adv,
         validator_signer.clone(),
     );
+    let (state_request_addr, _) = spawn_actix_actor(StateRequestActor::new(
+        Clock::real(),
+        runtime.clone(),
+        epoch_manager.clone(),
+        genesis_id.hash,
+        client_config.state_request_throttle_period,
+        client_config.state_requests_per_throttle_period,
+    ));
     let rpc_handler_config = RpcHandlerConfig {
         handler_threads: client_config.transaction_request_handler_threads,
         tx_routing_height_horizon: client_config.tx_routing_height_horizon,
@@ -158,13 +167,30 @@ fn setup_network_node(
         runtime.store().clone(),
         client_config.chunk_request_retry_period,
     );
+    let chain_store =
+        ChainStore::new(runtime.store().clone(), false, genesis.config.genesis_height);
+    let chunk_validation_actor = ChunkValidationActorInner::spawn_actix_actors(
+        chain_store,
+        Arc::new(genesis_block),
+        epoch_manager.clone(),
+        runtime.clone(),
+        network_adapter.as_sender(),
+        validator_signer.clone(),
+        false,
+        false,
+        Arc::new(RayonAsyncComputationSpawner),
+        near_chain_configs::default_orphan_state_witness_pool_size(),
+        near_chain_configs::default_orphan_state_witness_max_size().as_u64(),
+        1,
+    );
     let (partial_witness_actor, _) = spawn_actix_actor(PartialWitnessActor::new(
         Clock::real(),
         network_adapter.as_multi_sender(),
-        client_actor.clone().with_auto_span_context().into_multi_sender(),
+        chunk_validation_actor.with_auto_span_context().into_multi_sender(),
         validator_signer,
         epoch_manager,
         runtime,
+        Arc::new(RayonAsyncComputationSpawner),
         Arc::new(RayonAsyncComputationSpawner),
         Arc::new(RayonAsyncComputationSpawner),
     ));
@@ -174,6 +200,7 @@ fn setup_network_node(
         db.clone(),
         config,
         client_sender_for_network(client_actor, view_client_addr, rpc_handler),
+        state_request_addr.with_auto_span_context().into_multi_sender(),
         network_adapter.as_multi_sender(),
         shards_manager_adapter.as_sender(),
         partial_witness_actor.with_auto_span_context().into_multi_sender(),

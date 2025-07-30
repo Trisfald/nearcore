@@ -11,7 +11,9 @@ use crate::client_actor::ClientSenderForClient;
 use crate::debug::BlockProductionTracker;
 use crate::spice_core::CoreStatementsProcessor;
 use crate::stateless_validation::chunk_endorsement::ChunkEndorsementTracker;
-use crate::stateless_validation::chunk_validator::ChunkValidator;
+use crate::stateless_validation::chunk_validation_actor::{
+    BlockNotificationMessage, ChunkValidationSender,
+};
 use crate::stateless_validation::partial_witness::partial_witness_actor::PartialWitnessSenderForClient;
 use crate::sync::block::BlockSync;
 use crate::sync::epoch::EpochSync;
@@ -47,9 +49,7 @@ use near_epoch_manager::EpochManagerAdapter;
 use near_epoch_manager::shard_assignment::shard_id_to_uid;
 use near_epoch_manager::shard_tracker::ShardTracker;
 use near_network::types::{AccountKeys, ChainInfo, PeerManagerMessageRequest, SetChainInfo};
-use near_network::types::{
-    HighestHeightPeerInfo, NetworkRequests, PeerManagerAdapter, ReasonForBan,
-};
+use near_network::types::{NetworkRequests, PeerManagerAdapter, ReasonForBan};
 use near_primitives::block::{Approval, ApprovalInner, ApprovalMessage, Block, BlockHeader, Tip};
 use near_primitives::block_header::ApprovalType;
 use near_primitives::epoch_info::RngSeed;
@@ -72,10 +72,11 @@ use near_primitives::utils::MaybeValidated;
 use near_primitives::validator_signer::ValidatorSigner;
 use near_primitives::version::PROTOCOL_VERSION;
 use near_primitives::views::{CatchupStatusView, DroppedReason};
+use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::{debug, debug_span, error, info, warn};
 
 const NUM_REBROADCAST_BLOCKS: usize = 30;
@@ -159,9 +160,8 @@ pub struct Client {
     pub resharding_sender: ReshardingSender,
     /// Helper module for handling chunk production.
     pub chunk_producer: ChunkProducer,
-    /// Helper module for stateless validation functionality like chunk witness production, validation
-    /// chunk endorsements tracking etc.
-    pub chunk_validator: ChunkValidator,
+    /// Sender to the chunk validation actor for relaying block notifications to the ChunkValidatorActor
+    pub chunk_validation_sender: ChunkValidationSender,
     /// Tracks current chunks that are ready to be included in block
     /// Also tracks banned chunk producers and filters out chunks produced by them
     pub chunk_inclusion_tracker: ChunkInclusionTracker,
@@ -177,6 +177,8 @@ pub struct Client {
     last_optimistic_block_produced: Option<OptimisticBlock>,
     /// Cached precomputed set of the chunk producers for current and next epochs.
     chunk_producer_accounts_cache: Option<(EpochId, Arc<Vec<AccountId>>)>,
+    /// Reed-Solomon encoder for shadow chunk validation.
+    shadow_validation_reed_solomon: OnceLock<Arc<ReedSolomon>>,
 }
 
 impl AsRef<Client> for Client {
@@ -202,6 +204,15 @@ impl Client {
     pub(crate) fn update_validator_signer(&self, signer: Option<Arc<ValidatorSigner>>) -> bool {
         self.validator_signer.update(signer)
     }
+
+    /// Returns the Reed-Solomon encoder for shadow validation, initializing it lazily if needed.
+    pub(crate) fn shadow_validation_reed_solomon_encoder(&self) -> &Arc<ReedSolomon> {
+        self.shadow_validation_reed_solomon.get_or_init(|| {
+            let data_parts = self.epoch_manager.num_data_parts();
+            let parity_parts = self.epoch_manager.num_total_parts() - data_parts;
+            Arc::new(ReedSolomon::new(data_parts, parity_parts).unwrap())
+        })
+    }
 }
 
 /// A collection of async computation spawners which will be used for various
@@ -211,8 +222,6 @@ pub struct AsyncComputationMultiSpawner {
     apply_chunks: ApplyChunksSpawner,
     /// Spawner to run 'epoch sync' tasks (defaults to `RayonAsyncComputationSpawner`)
     epoch_sync: Arc<dyn AsyncComputationSpawner>,
-    /// Spawner to run 'stateless validation' tasks (see `ApplyChunksSpawner` for default)
-    stateless_validation: ApplyChunksSpawner,
 }
 
 impl Default for AsyncComputationMultiSpawner {
@@ -220,7 +229,6 @@ impl Default for AsyncComputationMultiSpawner {
         Self {
             apply_chunks: Default::default(),
             epoch_sync: Arc::new(RayonAsyncComputationSpawner),
-            stateless_validation: Default::default(),
         }
     }
 }
@@ -228,25 +236,12 @@ impl Default for AsyncComputationMultiSpawner {
 impl AsyncComputationMultiSpawner {
     /// Use a custom spawner for all kinds of tasks.
     pub fn all_custom(spawner: Arc<dyn AsyncComputationSpawner>) -> Self {
-        Self {
-            apply_chunks: ApplyChunksSpawner::Custom(spawner.clone()),
-            epoch_sync: spawner.clone(),
-            stateless_validation: ApplyChunksSpawner::Custom(spawner),
-        }
+        Self { apply_chunks: ApplyChunksSpawner::Custom(spawner.clone()), epoch_sync: spawner }
     }
 
     /// Use a custom spawner for 'apply chunks' tasks
     pub fn custom_apply_chunks(mut self, spawner: Arc<dyn AsyncComputationSpawner>) -> Self {
         self.apply_chunks = ApplyChunksSpawner::Custom(spawner);
-        self
-    }
-
-    /// Use a custom spawner for 'stateless validation' tasks
-    pub fn custom_stateless_validation(
-        mut self,
-        spawner: Arc<dyn AsyncComputationSpawner>,
-    ) -> Self {
-        self.stateless_validation = ApplyChunksSpawner::Custom(spawner);
         self
     }
 }
@@ -271,6 +266,7 @@ impl Client {
         state_sync_future_spawner: Arc<dyn FutureSpawner>,
         chain_sender_for_state_sync: ChainSenderForStateSync,
         myself_sender: ClientSenderForClient,
+        chunk_validation_sender: ChunkValidationSender,
         upgrade_schedule: ProtocolUpgradeVotingSchedule,
         spice_core_processor: CoreStatementsProcessor,
     ) -> Result<Self, Error> {
@@ -366,13 +362,7 @@ impl Client {
             rng_seed,
             config.transaction_pool_size_limit,
         );
-        let chunk_validator = ChunkValidator::new(
-            epoch_manager.clone(),
-            network_adapter.clone().into_sender(),
-            runtime_adapter.clone(),
-            config.orphan_state_witness_pool_size,
-            multi_spawner.stateless_validation,
-        );
+
         let chunk_distribution_network = ChunkDistributionNetwork::from_config(&config);
         Ok(Self {
             #[cfg(feature = "test_features")]
@@ -412,7 +402,7 @@ impl Client {
             tier1_accounts_cache: None,
             resharding_sender,
             chunk_producer,
-            chunk_validator,
+            chunk_validation_sender,
             chunk_inclusion_tracker: ChunkInclusionTracker::new(),
             chunk_endorsement_tracker,
             partial_witness_adapter,
@@ -420,6 +410,7 @@ impl Client {
             upgrade_schedule,
             last_optimistic_block_produced: None,
             chunk_producer_accounts_cache: None,
+            shadow_validation_reed_solomon: OnceLock::new(),
         })
     }
 
@@ -1570,7 +1561,7 @@ impl Client {
             if can_produce_with_provenance && can_produce_with_sync_status && !skip_produce_chunk {
                 self.produce_chunks(&block, &signer);
             } else {
-                info!(target: "client", can_produce_with_provenance, can_produce_with_sync_status, skip_produce_chunk, "not producing a chunk");
+                tracing::debug!(target: "client", can_produce_with_provenance, can_produce_with_sync_status, skip_produce_chunk, "not producing a chunk");
             }
         }
 
@@ -1591,7 +1582,9 @@ impl Client {
         self.shards_manager_adapter
             .send(ShardsManagerRequestFromClient::CheckIncompleteChunks(*block.hash()));
 
-        self.process_ready_orphan_witnesses_and_clean_old(&block);
+        // Notify chunk validation actor about the new block for orphan witness processing
+        let block_notification = BlockNotificationMessage { block: block.clone() };
+        self.chunk_validation_sender.block_notification.send(block_notification);
     }
 
     /// Reconcile the transaction pool after processing a block.
@@ -1692,42 +1685,11 @@ impl Client {
             block_height = block.header().height())
         .entered();
 
-        #[cfg(feature = "test_features")]
-        match self.chunk_producer.adv_produce_chunks {
-            Some(AdvProduceChunksMode::StopProduce) => {
-                tracing::info!(
-                    target: "adversary",
-                    block_height = block.header().height(),
-                    "skipping chunk production due to adversary configuration"
-                );
-                return;
-            }
-            _ => {}
-        };
-
         let epoch_id =
             self.epoch_manager.get_epoch_id_from_prev_block(block.header().hash()).unwrap();
         for shard_id in self.epoch_manager.shard_ids(&epoch_id).unwrap() {
             let next_height = block.header().height() + 1;
             let epoch_manager = self.epoch_manager.as_ref();
-            let chunk_proposer = epoch_manager
-                .get_chunk_producer_info(&ChunkProductionKey {
-                    epoch_id,
-                    height_created: next_height,
-                    shard_id,
-                })
-                .unwrap()
-                .take_account_id();
-            if &chunk_proposer != &validator_id {
-                continue;
-            }
-
-            let _span = debug_span!(
-                target: "client",
-                "on_block_accepted",
-                prev_block_hash = ?*block.hash(),
-                %shard_id)
-            .entered();
             let _timer = metrics::PRODUCE_AND_DISTRIBUTE_CHUNK_TIME
                 .with_label_values(&[&shard_id.to_string()])
                 .start_timer();
@@ -1742,7 +1704,7 @@ impl Client {
 
                 #[cfg(feature = "test_features")]
                 let chain_validate: &dyn Fn(&SignedTransaction) -> bool = {
-                    match self.chunk_producer.adv_produce_chunks {
+                    match self.chunk_producer.adversarial.produce_mode {
                         Some(AdvProduceChunksMode::ProduceWithoutTxValidityCheck) => &|_| true,
                         _ => &transaction_validity_check,
                     }
@@ -1761,10 +1723,10 @@ impl Client {
 
             let ProduceChunkResult { chunk, encoded_chunk_parts_paths, receipts } = match result {
                 Ok(Some(res)) => res,
-                Ok(None) => return,
+                Ok(None) => continue,
                 Err(err) => {
-                    error!(target: "client", ?err, "Error producing chunk");
-                    return;
+                    error!(target: "client", ?shard_id, ?err, "error producing chunk");
+                    continue;
                 }
             };
             if !cfg!(feature = "protocol_feature_spice") {
@@ -2116,7 +2078,6 @@ impl Client {
     /// Walks through all the ongoing state syncs for future epochs and processes them
     pub fn run_catchup(
         &mut self,
-        highest_height_peers: &[HighestHeightPeerInfo],
         block_catch_up_task_scheduler: &Sender<BlockCatchUpRequest>,
         apply_chunks_done_sender: Option<ApplyChunksDoneSender>,
     ) -> Result<(), Error> {
@@ -2170,12 +2131,7 @@ impl Client {
             // Initialize the new shard sync to contain the shards to split at
             // first. It will get updated with the shard sync download status
             // for other shards later.
-            match state_sync.run(
-                sync_hash,
-                status,
-                highest_height_peers,
-                state_sync_info.shards(),
-            )? {
+            match state_sync.run(sync_hash, status, state_sync_info.shards())? {
                 StateSyncResult::InProgress => {}
                 StateSyncResult::Completed => {
                     debug!(target: "catchup", "state sync completed now catch up blocks");
@@ -2351,7 +2307,7 @@ impl Client {
         let tracked_shards = if self.config.tracked_shards_config.tracks_all_shards() {
             self.epoch_manager.shard_ids(&tip.epoch_id)?
         } else {
-            // TODO(archival_v2): Revisit this to determine if improvements can be made
+            // TODO(cloud_archival): Revisit this to determine if improvements can be made
             // and if the issue described above has been resolved.
             vec![]
         };
