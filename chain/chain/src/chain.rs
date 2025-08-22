@@ -3637,6 +3637,13 @@ impl Chain {
         receipts: &[Receipt],
         shard_layout: &ShardLayout,
     ) -> Result<Vec<CryptoHash>, EpochError> {
+        let _span = tracing::debug_span!(
+            target: "chain",
+            "build_receipts_hashes",
+            receipts = receipts.len(),
+            shards = shard_layout.num_shards()
+        )
+        .entered();
         // Using a BTreeMap instead of HashMap to enable in order iteration
         // below. It's important here to use the ShardIndexes, rather than
         // ShardIds since the latter are not guaranteed to be in order.

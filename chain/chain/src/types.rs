@@ -118,7 +118,7 @@ pub struct ApplyChunkResult {
 
 impl ApplyChunkResult {
     /// Returns root and paths for all the outcomes in the result.
-    #[instrument(target = "runtime", level = "debug", "compute_outcomes_proof", skip_all, fields(
+    #[instrument(target = "chain", level = "debug", "compute_outcomes_proof", skip_all, fields(
         num_outcomes = outcomes.len()
     ))]
     pub fn compute_outcomes_proof(

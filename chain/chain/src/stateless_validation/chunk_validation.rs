@@ -40,6 +40,7 @@ use near_store::trie::ops::resharding::RetainMode;
 use near_store::{PartialStorage, Store, Trie};
 use node_runtime::SignedValidPeriodTransactions;
 use parking_lot::Mutex;
+use rayon::prelude::*;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -441,28 +442,31 @@ fn validate_source_receipt_proofs(
     // Iterate over blocks between last_chunk_block (inclusive) and last_last_chunk_block (exclusive),
     // from the newest blocks to the oldest.
     for block in receipt_source_blocks {
-        // Collect all receipts coming from this block.
-        let mut block_receipt_proofs = Vec::new();
+        // Validate per-chunk proofs in parallel.
+        let chunks_new: Vec<_> = block.chunks().iter_new().cloned().collect();
+        let mut block_receipt_proofs: Vec<ReceiptProof> = chunks_new
+            .par_iter()
+            .map(|chunk| {
+                let receipt_proof =
+                    source_receipt_proofs.get(&chunk.chunk_hash()).ok_or_else(|| {
+                        Error::InvalidChunkStateWitness(format!(
+                            "Missing source receipt proof for chunk {:?}",
+                            chunk.chunk_hash()
+                        ))
+                    })?;
 
-        for chunk in block.chunks().iter_new() {
-            // Collect receipts coming from this chunk and validate that they are correct.
-            let Some(receipt_proof) = source_receipt_proofs.get(&chunk.chunk_hash()) else {
-                return Err(Error::InvalidChunkStateWitness(format!(
-                    "Missing source receipt proof for chunk {:?}",
-                    chunk.chunk_hash()
-                )));
-            };
+                validate_receipt_proof(
+                    receipt_proof,
+                    chunk,
+                    current_target_shard_id,
+                    *chunk.prev_outgoing_receipts_root(),
+                )?;
 
-            validate_receipt_proof(
-                receipt_proof,
-                chunk,
-                current_target_shard_id,
-                *chunk.prev_outgoing_receipts_root(),
-            )?;
+                Ok::<ReceiptProof, Error>(receipt_proof.clone())
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
 
-            expected_proofs_len += 1;
-            block_receipt_proofs.push(receipt_proof.clone());
-        }
+        expected_proofs_len += block_receipt_proofs.len();
 
         block_receipt_proofs = filter_incoming_receipts_for_shard(
             &target_shard_layout,
