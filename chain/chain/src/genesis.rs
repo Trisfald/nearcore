@@ -162,7 +162,7 @@ impl Chain {
                 shard_uid,
                 genesis.hash(),
                 genesis.header().height(),
-            )
+            );
         }
         store_update.merge(tmp_store_update);
         store_update.commit()?;
