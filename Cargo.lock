@@ -4400,10 +4400,12 @@ dependencies = [
  "borsh",
  "clap",
  "near-chain-configs",
+ "near-client",
  "near-primitives",
  "near-store",
  "nearcore",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
