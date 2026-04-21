@@ -240,6 +240,16 @@ impl ReshardingManager {
             tries.apply_insertions(&trie_changes, *parent_shard_uid, &mut store_update);
             tries.apply_memtrie_changes(&trie_changes, *parent_shard_uid, block_height);
 
+            // Persist TrieChanges so that cold store can copy the resharding
+            // insertions. We store only insertions (no deletions) because
+            // deletions are not applied during resharding and would corrupt
+            // GC refcounts.
+            store_update.set_trie_changes(
+                *new_shard_uid,
+                block_hash,
+                &trie_changes.insertions_only(),
+            );
+
             // TODO(resharding): set all fields of `ChunkExtra`. Consider stronger
             // typing. Clarify where it should happen when `State` and
             // `FlatState` update is implemented.
