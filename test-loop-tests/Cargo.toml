@@ -22,6 +22,7 @@ ethabi.workspace = true
 futures.workspace = true
 hex.workspace = true
 itertools.workspace = true
+p256.workspace = true
 parking_lot.workspace = true
 primitive-types.workspace = true
 rand.workspace = true
